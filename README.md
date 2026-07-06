@@ -1,4 +1,4 @@
-<![CDATA[# 🤝 Personalized Network Assistant
+# 🤝 Personalized Network Assistant
 
 > **AI-powered conversation starter generator** that extracts themes from networking event descriptions, generates tailored icebreakers using GPT-2, and verifies facts via Wikipedia — all wrapped in a sleek dark-themed web interface.
 
@@ -616,4 +616,4 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 <p align="center">
   <strong>Built with ❤️ using FastAPI, Streamlit, and Hugging Face Transformers</strong>
 </p>
-]]>
+
