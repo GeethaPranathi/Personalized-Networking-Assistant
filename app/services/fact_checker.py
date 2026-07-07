@@ -44,7 +44,7 @@ def fact_check(query: str) -> str:
     url = _WIKIPEDIA_API_URL.format(formatted_query)
 
     headers = {
-        "User-Agent": "PersonalizedNetworkAssistant/1.0 (contact@example.com)"
+        "User-Agent": "PersonalizedNetworkAssistantBot/1.0.0 (https://github.com/GeethaPranathi/Personalized-Networking-Assistant; pranathi@example.com)"
     }
 
     try:
@@ -58,8 +58,11 @@ def fact_check(query: str) -> str:
     except requests.exceptions.Timeout:
         return "Fact-check request timed out. Please try again."
     except requests.exceptions.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code == 404:
-            return f"No Wikipedia article found for '{query}'."
+        if exc.response is not None:
+            if exc.response.status_code == 404:
+                return f"No Wikipedia article found for '{query}'."
+            if exc.response.status_code == 429:
+                return "Wikipedia rate limit reached. Too many requests. Please try again in a few moments."
         return f"Wikipedia returned an error: {exc}"
     except requests.exceptions.RequestException as exc:
         return f"Network error during fact-check: {exc}"

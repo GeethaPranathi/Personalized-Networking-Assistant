@@ -96,3 +96,17 @@ class TestFactCheck:
 
         called_url: str = mock_get.call_args[0][0]
         assert "machine_learning" in called_url
+
+    @patch("app.services.fact_checker.requests.get")
+    def test_returns_rate_limit_message_on_429(self, mock_get):
+        """Should return a user-friendly rate limit message when Wikipedia returns 429."""
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        http_error = requests.exceptions.HTTPError(response=mock_response)
+        mock_response.raise_for_status.side_effect = http_error
+        mock_get.return_value = mock_response
+
+        from app.services.fact_checker import fact_check
+
+        result = fact_check("RateLimitTest")
+        assert "rate limit reached" in result.lower()
