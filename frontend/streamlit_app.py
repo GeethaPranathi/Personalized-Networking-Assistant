@@ -3,6 +3,9 @@ streamlit_app.py
 ----------------
 Full-featured Streamlit frontend for the Personalized Network Assistant.
 
+This version calls service functions DIRECTLY (no FastAPI backend required),
+making it fully deployable on Streamlit Cloud as a standalone app.
+
 Sections:
   1. Sidebar — User profile (name + interests)
   2. Main — Event description input + Generate button
@@ -23,7 +26,6 @@ import sys
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import requests
 import streamlit as st
 
 # ---------------------------------------------------------------------------
@@ -35,11 +37,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-# ---------------------------------------------------------------------------
-# API base URL — points to the running FastAPI backend
-# ---------------------------------------------------------------------------
-API_BASE = "http://127.0.0.1:8000/conversation"
 
 # ---------------------------------------------------------------------------
 # Custom CSS — premium dark glassmorphism design
@@ -233,6 +230,30 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------------------
+# Lazy-load services (imported here to avoid errors before sys.path is set)
+# ---------------------------------------------------------------------------
+@st.cache_resource(show_spinner="⚙️ Loading AI models (first run only)…")
+def _load_services():
+    """Load and cache the ML services — called once per Streamlit session."""
+    from app.services.event_analyzer import extract_event_themes
+    from app.services.topic_generator import generate_topics
+    from app.services.fact_checker import fact_check
+    from app.services.feedback_logger import log_feedback, load_feedback
+    from app.services.history_logger import log_conversation, load_history
+    return {
+        "extract_event_themes": extract_event_themes,
+        "generate_topics": generate_topics,
+        "fact_check": fact_check,
+        "log_feedback": log_feedback,
+        "load_feedback": load_feedback,
+        "log_conversation": log_conversation,
+        "load_history": load_history,
+    }
+
+
+svc = _load_services()
+
+# ---------------------------------------------------------------------------
 # Session state initialisation
 # ---------------------------------------------------------------------------
 defaults = {
@@ -246,38 +267,6 @@ defaults = {
 for key, val in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = val
-
-# ---------------------------------------------------------------------------
-# Helper: API call with error handling
-# ---------------------------------------------------------------------------
-
-
-def call_api(endpoint: str, payload: dict | None = None, method: str = "POST") -> dict | list | None:
-    """Make requests to the FastAPI backend and return parsed JSON, or None on error."""
-    try:
-        if method.upper() == "POST":
-            response = requests.post(
-                f"{API_BASE}/{endpoint}", json=payload, timeout=120
-            )
-        else:
-            response = requests.get(
-                f"{API_BASE}/{endpoint}", timeout=120
-            )
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.ConnectionError:
-        st.error(
-            "⚠️ Cannot connect to the FastAPI backend. "
-            "Make sure it is running: `uvicorn app.main:app --reload`"
-        )
-        return None
-    except requests.exceptions.Timeout:
-        st.error("⏱ Request timed out. The AI model may still be loading — please retry.")
-        return None
-    except requests.exceptions.HTTPError as exc:
-        st.error(f"API error {exc.response.status_code}: {exc.response.text}")
-        return None
-
 
 # ---------------------------------------------------------------------------
 # Hero banner
@@ -373,26 +362,32 @@ with tab_generate:
                 unsafe_allow_html=True,
             )
         else:
-            with st.spinner("🤖 Analysing event themes with DistilBERT…"):
-                payload = {
-                    "description": event_description.strip(),
-                    "user_profile": {
-                        "name": user_name.strip(),
-                        "interests": interests,
-                    },
-                }
-                data = call_api("generate-conversation", payload)
+            try:
+                with st.spinner("🤖 Analysing event themes with DistilBERT…"):
+                    themes = svc["extract_event_themes"](event_description.strip())
 
-            if data:
+                with st.spinner("✍️ Generating conversation starters with GPT-2…"):
+                    starters = svc["generate_topics"](themes, interests)
+
+                # Persist to history
+                svc["log_conversation"]({
+                    "user_name": user_name.strip(),
+                    "event_description": event_description.strip(),
+                    "themes": themes,
+                    "starters": starters,
+                })
+
                 st.session_state.generated = True
-                st.session_state.themes = data.get("themes", [])
-                st.session_state.starters = data.get("starters", [])
+                st.session_state.themes = themes
+                st.session_state.starters = starters
                 st.session_state.feedback_given = {}
                 st.session_state.history_cache = None  # invalidate cache
                 st.markdown(
                     '<div class="success-msg">✅ Conversation starters generated successfully!</div>',
                     unsafe_allow_html=True,
                 )
+            except Exception as exc:
+                st.error(f"❌ Error generating starters: {exc}")
 
     # ── Results display ──
     if st.session_state.generated and st.session_state.starters:
@@ -421,14 +416,13 @@ with tab_generate:
                         key=f"like_{idx}",
                         disabled=fb_status is not None,
                     ):
-                        result = call_api(
-                            "feedback",
-                            {"suggestion": starter, "action": "like"},
-                        )
-                        if result:
+                        try:
+                            svc["log_feedback"](starter, "like")
                             st.session_state.feedback_given[starter] = "like"
                             st.session_state.feedback_cache = None
                             st.rerun()
+                        except Exception as exc:
+                            st.error(f"Failed to save feedback: {exc}")
 
                 with col_dislike:
                     disliked = fb_status == "dislike"
@@ -437,14 +431,13 @@ with tab_generate:
                         key=f"dislike_{idx}",
                         disabled=fb_status is not None,
                     ):
-                        result = call_api(
-                            "feedback",
-                            {"suggestion": starter, "action": "dislike"},
-                        )
-                        if result:
+                        try:
+                            svc["log_feedback"](starter, "dislike")
                             st.session_state.feedback_given[starter] = "dislike"
                             st.session_state.feedback_cache = None
                             st.rerun()
+                        except Exception as exc:
+                            st.error(f"Failed to save feedback: {exc}")
 
         st.markdown("---")
         st.caption(
@@ -472,15 +465,10 @@ with tab_factcheck:
 
     if fc_btn and fc_query.strip():
         with st.spinner("Fetching Wikipedia summary…"):
-            payload = {"query": fc_query.strip()}
             try:
-                resp = requests.post(
-                    f"{API_BASE}/fact-check", json=payload, timeout=30
-                )
-                resp.raise_for_status()
-                fc_data = resp.json()
+                result = svc["fact_check"](fc_query.strip())
                 st.markdown(
-                    f'<div class="fact-box"><strong>📖 {fc_data["query"]}</strong><br><br>{fc_data["result"]}</div>',
+                    f'<div class="fact-box"><strong>📖 {fc_query.strip()}</strong><br><br>{result}</div>',
                     unsafe_allow_html=True,
                 )
             except Exception as exc:
@@ -497,7 +485,10 @@ with tab_history:
     refresh_history = st.button("🔄 Refresh History", key="refresh_history")
 
     if refresh_history or st.session_state.history_cache is None:
-        st.session_state.history_cache = call_api("history", method="GET") or []
+        try:
+            st.session_state.history_cache = svc["load_history"]() or []
+        except Exception:
+            st.session_state.history_cache = []
 
     history = st.session_state.history_cache or []
 
@@ -534,7 +525,10 @@ with tab_feedback:
     refresh_fb = st.button("🔄 Refresh Feedback Log", key="refresh_feedback")
 
     if refresh_fb or st.session_state.feedback_cache is None:
-        st.session_state.feedback_cache = call_api("feedback", method="GET") or []
+        try:
+            st.session_state.feedback_cache = svc["load_feedback"]() or []
+        except Exception:
+            st.session_state.feedback_cache = []
 
     feedback = st.session_state.feedback_cache or []
 
