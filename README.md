@@ -8,6 +8,10 @@
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black)](https://huggingface.co)
 
 ---
+## 🚀 Live Demo
+**https://personalized-networking-assistant-mzjnhmehchghqniqhlrbg6.streamlit.app/**
+
+---
 
 ## 📖 Project Documentation
 
